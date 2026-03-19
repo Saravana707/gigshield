@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --teal: #02C39A;
+  --navy: #0D1B2A;
+  --slate: #1A2F45;
+}
+
+body {
+  background-color: #030712;
+}
+
+.risk-bar {
+  transition: width 0.8s ease-out;
+}

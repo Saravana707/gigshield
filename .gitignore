@@ -1,0 +1,10 @@
+backend/.env
+frontend/.env.local
+contracts/.env
+backend/venv/
+frontend/node_modules/
+contracts/node_modules/
+frontend/.next/
+contracts/artifacts/
+contracts/cache/
+.DS_Store
