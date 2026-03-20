@@ -1,12 +1,17 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import anthropic
+import google.generativeai as genai
 from pypdf import PdfReader
 import io
 import json
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 app = FastAPI(title="GigShield API", version="1.0.0")
 
@@ -18,18 +23,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
-# ─── Models ──────────────────────────────────────────────────────────────────
-
 class RiskFlag(BaseModel):
     clause: str
-    risk_level: str          # "HIGH" | "MEDIUM" | "LOW"
+    risk_level: str
     explanation: str
     recommendation: str
 
 class ContractAnalysis(BaseModel):
-    overall_risk_score: int   # 0-100 (100 = most risky)
+    overall_risk_score: int
     summary: str
     flags: list[RiskFlag]
     payment_risk: int
@@ -39,14 +40,12 @@ class ContractAnalysis(BaseModel):
     worker_friendly: bool
 
 class DisputeVerdict(BaseModel):
-    ruling: str              # "FREELANCER" | "CLIENT" | "SPLIT"
-    confidence: int          # 0-100
+    ruling: str
+    confidence: int
     reasoning: str
-    recommended_split: Optional[int] = None  # % to freelancer if SPLIT
+    recommended_split: Optional[int] = None
 
-# ─── System Prompts ──────────────────────────────────────────────────────────
-
-CONTRACT_SYSTEM_PROMPT = """You are GigShield's AI Legal Auditor — an expert in freelance contract law, 
+CONTRACT_SYSTEM_PROMPT = """You are GigShield's AI Legal Auditor — an expert in freelance contract law,
 labor rights, and gig economy regulations across India, the US, and Southeast Asia.
 
 Analyze the provided contract and return a JSON object with this exact structure:
@@ -69,15 +68,15 @@ Analyze the provided contract and return a JSON object with this exact structure
 }
 
 Key things to flag:
-- Payment terms longer than 30 days (industry standard) → HIGH risk
-- IP ownership clauses that grab all work product including pre-existing work → HIGH risk
-- Non-compete clauses that are overly broad (geography, duration, scope) → HIGH risk
-- Unilateral termination without notice or payment → HIGH risk
-- Unlimited liability or indemnification clauses → HIGH risk
-- Missing dispute resolution mechanism → MEDIUM risk
-- Vague deliverable definitions (grounds for non-payment) → MEDIUM risk
-- Automatic renewal clauses with short opt-out windows → MEDIUM risk
-- Missing confidentiality reciprocity → LOW risk
+- Payment terms longer than 30 days (industry standard) -> HIGH risk
+- IP ownership clauses that grab all work product including pre-existing work -> HIGH risk
+- Non-compete clauses that are overly broad (geography, duration, scope) -> HIGH risk
+- Unilateral termination without notice or payment -> HIGH risk
+- Unlimited liability or indemnification clauses -> HIGH risk
+- Missing dispute resolution mechanism -> MEDIUM risk
+- Vague deliverable definitions (grounds for non-payment) -> MEDIUM risk
+- Automatic renewal clauses with short opt-out windows -> MEDIUM risk
+- Missing confidentiality reciprocity -> LOW risk
 
 Return ONLY the JSON object, no other text."""
 
@@ -104,8 +103,6 @@ Base your ruling strictly on:
 
 Return ONLY the JSON object, no other text."""
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(file_bytes))
     text = ""
@@ -116,7 +113,18 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 def extract_text_from_txt(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore")
 
-# ─── Routes ──────────────────────────────────────────────────────────────────
+def call_gemini(system_prompt: str, user_message: str) -> str:
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=system_prompt
+    )
+    response = model.generate_content(user_message)
+    raw = response.text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return raw.strip()
 
 @app.get("/")
 def root():
@@ -126,111 +134,48 @@ def root():
 def health():
     return {"status": "ok"}
 
-
 @app.post("/analyze", response_model=ContractAnalysis)
 async def analyze_contract(file: UploadFile = File(...)):
-    """
-    Upload a contract PDF or TXT file and get a full risk analysis.
-    """
     content = await file.read()
-
-    # Extract text based on file type
     if file.filename.lower().endswith(".pdf"):
         contract_text = extract_text_from_pdf(content)
     elif file.filename.lower().endswith((".txt", ".md")):
         contract_text = extract_text_from_txt(content)
     else:
         raise HTTPException(status_code=400, detail="Unsupported file type. Use PDF or TXT.")
-
     if len(contract_text) < 50:
         raise HTTPException(status_code=400, detail="Could not extract text from file. Try a different format.")
-
-    # Truncate if extremely long (keep first 8000 chars to stay within context)
     if len(contract_text) > 8000:
         contract_text = contract_text[:8000] + "\n\n[Contract truncated for analysis]"
-
-    # Call Claude
-    message = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=2000,
-        system=CONTRACT_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Analyze this freelance contract:\n\n{contract_text}"
-            }
-        ]
-    )
-
-    raw = message.content[0].text.strip()
-
-    # Strip markdown fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
-
     try:
+        raw = call_gemini(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response. Try again.")
-
     return ContractAnalysis(**data)
-
 
 @app.post("/analyze-text", response_model=ContractAnalysis)
 async def analyze_contract_text(payload: dict):
-    """
-    Analyze a contract from raw pasted text.
-    """
     contract_text = payload.get("text", "").strip()
     if len(contract_text) < 50:
         raise HTTPException(status_code=400, detail="Contract text too short.")
-
     if len(contract_text) > 8000:
         contract_text = contract_text[:8000] + "\n\n[Contract truncated for analysis]"
-
-    message = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=2000,
-        system=CONTRACT_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Analyze this freelance contract:\n\n{contract_text}"
-            }
-        ]
-    )
-
-    raw = message.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
-
     try:
+        raw = call_gemini(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response.")
-
     return ContractAnalysis(**data)
-
 
 @app.post("/dispute", response_model=DisputeVerdict)
 async def resolve_dispute(payload: dict):
-    """
-    Submit a dispute for AI mediation.
-    """
-    contract_terms = payload.get("contract_terms", "")
+    contract_terms   = payload.get("contract_terms", "")
     freelancer_claim = payload.get("freelancer_claim", "")
-    client_claim = payload.get("client_claim", "")
-    evidence = payload.get("evidence_description", "")
-
+    client_claim     = payload.get("client_claim", "")
+    evidence         = payload.get("evidence_description", "")
     if not all([contract_terms, freelancer_claim, client_claim]):
         raise HTTPException(status_code=400, detail="Missing required fields.")
-
     prompt = f"""CONTRACT TERMS:
 {contract_terms}
 
@@ -242,24 +187,9 @@ CLIENT'S COUNTER-CLAIM:
 
 EVIDENCE SUBMITTED:
 {evidence or 'No additional evidence provided.'}"""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=1000,
-        system=DISPUTE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = message.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
-
     try:
+        raw = call_gemini(DISPUTE_SYSTEM_PROMPT, prompt)
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response.")
-
     return DisputeVerdict(**data)
