@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+import anthropic
 from pypdf import PdfReader
 import io
 import json
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 app = FastAPI(title="GigShield API", version="1.0.0")
 
@@ -22,6 +22,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Models ──────────────────────────────────────────────────────────────────
 
 class RiskFlag(BaseModel):
     clause: str
@@ -44,6 +46,8 @@ class DisputeVerdict(BaseModel):
     confidence: int
     reasoning: str
     recommended_split: Optional[int] = None
+
+# ─── System Prompts ──────────────────────────────────────────────────────────
 
 CONTRACT_SYSTEM_PROMPT = """You are GigShield's AI Legal Auditor — an expert in freelance contract law,
 labor rights, and gig economy regulations across India, the US, and Southeast Asia.
@@ -103,6 +107,8 @@ Base your ruling strictly on:
 
 Return ONLY the JSON object, no other text."""
 
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     reader = PdfReader(io.BytesIO(file_bytes))
     text = ""
@@ -113,18 +119,21 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 def extract_text_from_txt(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8", errors="ignore")
 
-def call_gemini(system_prompt: str, user_message: str) -> str:
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=system_prompt
+def call_claude(system_prompt: str, user_message: str) -> str:
+    message = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=2000,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}]
     )
-    response = model.generate_content(user_message)
-    raw = response.text.strip()
+    raw = message.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     return raw.strip()
+
+# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def root():
@@ -142,13 +151,19 @@ async def analyze_contract(file: UploadFile = File(...)):
     elif file.filename.lower().endswith((".txt", ".md")):
         contract_text = extract_text_from_txt(content)
     else:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Use PDF or TXT.")
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Use PDF or TXT."
+        )
     if len(contract_text) < 50:
-        raise HTTPException(status_code=400, detail="Could not extract text from file. Try a different format.")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract text from file. Try a different format."
+        )
     if len(contract_text) > 8000:
         contract_text = contract_text[:8000] + "\n\n[Contract truncated for analysis]"
     try:
-        raw = call_gemini(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
+        raw = call_claude(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response. Try again.")
@@ -162,7 +177,7 @@ async def analyze_contract_text(payload: dict):
     if len(contract_text) > 8000:
         contract_text = contract_text[:8000] + "\n\n[Contract truncated for analysis]"
     try:
-        raw = call_gemini(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
+        raw = call_claude(CONTRACT_SYSTEM_PROMPT, f"Analyze this freelance contract:\n\n{contract_text}")
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response.")
@@ -188,7 +203,7 @@ CLIENT'S COUNTER-CLAIM:
 EVIDENCE SUBMITTED:
 {evidence or 'No additional evidence provided.'}"""
     try:
-        raw = call_gemini(DISPUTE_SYSTEM_PROMPT, prompt)
+        raw = call_claude(DISPUTE_SYSTEM_PROMPT, prompt)
         data = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid response.")
