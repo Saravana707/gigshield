@@ -272,7 +272,6 @@ Thiagarajar College of Engineering, Madurai.
 ## Links
 
 - GitHub: [github.com/Saravana707/gigshield](https://github.com/Saravana707/gigshield)
-- Instagram: [@sar_luci4](https://www.instagram.com/sar_luci4/)
 
 ---
 
