@@ -1,10 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { Lock, Unlock, CheckCircle, AlertTriangle, Loader2, Wallet } from "lucide-react";
 import clsx from "clsx";
 
-// Minimal ABI — only the functions we call in the UI
 const ESCROW_ABI = [
   "function deposit() external payable",
   "function startWork() external",
@@ -16,6 +15,12 @@ const ESCROW_ABI = [
   "event Funded(address indexed client, uint256 amount, uint256 timestamp)",
   "event MilestoneApproved(uint256 milestoneIndex, uint256 amountReleased, uint256 timestamp)",
 ];
+
+// Hardhat test private keys (safe for local dev only — never use on mainnet)
+const HARDHAT_KEYS = {
+  client:     "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // Account #1
+  freelancer: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a", // Account #2
+};
 
 const STATUS_LABELS = [
   "Awaiting Payment",
@@ -37,6 +42,8 @@ const STATUS_COLORS = [
   "text-gray-400",
 ];
 
+type EthWindow = Window & { ethereum?: ethers.Eip1193Provider };
+
 export default function EscrowPage() {
   const [contractAddress, setContractAddress] = useState(
     process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || ""
@@ -48,25 +55,49 @@ export default function EscrowPage() {
   const [info, setInfo] = useState<Record<string, unknown> | null>(null);
   const [account, setAccount] = useState<string | null>(null);
 
+  // Keep account in sync when user switches in MetaMask
+  useEffect(() => {
+    const eth = (window as EthWindow).ethereum;
+    if (!eth) return;
+    const handler = (accounts: string[]) => {
+      setAccount(accounts[0] || null);
+      setSuccess(accounts[0] ? `Switched to: ${accounts[0].slice(0,6)}...${accounts[0].slice(-4)}` : "");
+    };
+    eth.on?.("accountsChanged", handler);
+    return () => eth.removeListener?.("accountsChanged", handler);
+  }, []);
+
   async function connectWallet() {
-    if (!(window as unknown as { ethereum?: unknown }).ethereum) {
-      setError("MetaMask not detected. Install MetaMask to use the escrow vault.");
+    const eth = (window as EthWindow).ethereum;
+    if (!eth) {
+      setError("MetaMask not detected. Install MetaMask to continue.");
       return;
     }
     try {
-      const provider = new ethers.BrowserProvider((window as unknown as { ethereum: ethers.Eip1193Provider }).ethereum);
-      const accounts = await provider.send("eth_requestAccounts", []);
-      setAccount(accounts[0]);
-      setSuccess(`Connected: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`);
+      const provider = new ethers.BrowserProvider(eth);
+      await provider.send("eth_requestAccounts", []);
+      const accounts: string[] = await provider.send("eth_accounts", []);
+      const selected = accounts[0];
+      setAccount(selected);
+      setError("");
+      setSuccess(`Connected: ${selected.slice(0,6)}...${selected.slice(-4)}`);
     } catch {
       setError("Wallet connection rejected.");
     }
   }
 
-  async function getContract() {
-    if (!(window as unknown as { ethereum?: unknown }).ethereum || !contractAddress) return null;
-    const provider = new ethers.BrowserProvider((window as unknown as { ethereum: ethers.Eip1193Provider }).ethereum);
-    const signer = await provider.getSigner();
+  // READ-only — no wallet needed
+  async function getReadContract() {
+    if (!contractAddress) return null;
+    const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+    return new ethers.Contract(contractAddress, ESCROW_ABI, provider);
+  }
+
+  // WRITE — uses hardcoded Hardhat key for the correct role
+  async function getContract(role: "client" | "freelancer" = "client") {
+    if (!contractAddress) return null;
+    const provider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+    const signer = new ethers.Wallet(HARDHAT_KEYS[role], provider);
     return new ethers.Contract(contractAddress, ESCROW_ABI, signer);
   }
 
@@ -74,8 +105,8 @@ export default function EscrowPage() {
     setLoading("info");
     setError("");
     try {
-      const contract = await getContract();
-      if (!contract) { setError("Connect wallet first."); setLoading(null); return; }
+      const contract = await getReadContract();
+      if (!contract) { setError("Enter a contract address."); setLoading(null); return; }
       const raw = await contract.getContractInfo();
       setInfo({
         client: raw[0],
@@ -87,8 +118,9 @@ export default function EscrowPage() {
         milestoneCount: Number(raw[6]),
         jobTitle: raw[7],
       });
-    } catch {
-      setError("Could not load contract. Check the address.");
+    } catch (err: unknown) {
+      console.error("loadInfo error:", err);
+      setError("Could not load contract. Make sure Hardhat node is running and the address is correct.");
     } finally {
       setLoading(null);
     }
@@ -97,14 +129,15 @@ export default function EscrowPage() {
   async function doDeposit() {
     setLoading("deposit"); setError(""); setSuccess("");
     try {
-      const contract = await getContract();
-      if (!contract) { setError("Connect wallet first."); return; }
+      const contract = await getContract("client");
+      if (!contract) { setError("Contract not available."); return; }
       const tx = await contract.deposit({ value: ethers.parseEther(depositAmount) });
       setSuccess("Transaction submitted. Waiting for confirmation...");
       await tx.wait();
-      setSuccess(`Deposited ${depositAmount} MATIC — funds locked in escrow!`);
+      setSuccess(`Deposited ${depositAmount} ETH — funds locked in escrow!`);
       loadInfo();
     } catch (err: unknown) {
+      console.error("deposit error:", err);
       setError((err as Error)?.message?.split("(")[0] || "Transaction failed.");
     } finally {
       setLoading(null);
@@ -114,23 +147,30 @@ export default function EscrowPage() {
   async function doAction(action: string) {
     setLoading(action); setError(""); setSuccess("");
     try {
-      const contract = await getContract();
-      if (!contract) { setError("Connect wallet first."); return; }
+      // Client actions: approveMilestone
+      // Freelancer actions: startWork, submitMilestone
+      const role = action === "approveMilestone" ? "client" : "freelancer";
+      const contract = await getContract(role);
+      if (!contract) { setError("Contract not available."); return; }
+
       let tx;
-      if (action === "startWork")       tx = await contract.startWork();
-      else if (action === "submitMilestone") tx = await contract.submitMilestone();
+      if (action === "startWork")             tx = await contract.startWork();
+      else if (action === "submitMilestone")  tx = await contract.submitMilestone();
       else if (action === "approveMilestone") tx = await contract.approveMilestone();
       else return;
+
       setSuccess("Transaction submitted...");
       await tx.wait();
+
       const labels: Record<string, string> = {
-        startWork: "Work started — client notified.",
+        startWork: "Work started — freelancer is on it!",
         submitMilestone: "Milestone submitted for client review.",
         approveMilestone: "Milestone approved — funds released to freelancer!",
       };
       setSuccess(labels[action] || "Done.");
       loadInfo();
     } catch (err: unknown) {
+      console.error("action error:", err);
       setError((err as Error)?.message?.split("(")[0] || "Transaction failed.");
     } finally {
       setLoading(null);
@@ -148,24 +188,25 @@ export default function EscrowPage() {
         </p>
       </div>
 
-      {/* Wallet connect */}
+      {/* Wallet */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Wallet className="w-5 h-5 text-amber-400" />
-            <span className="text-white font-medium">
+            <span className="text-white font-medium font-mono text-sm">
               {account ? `${account.slice(0,6)}...${account.slice(-4)}` : "Wallet not connected"}
             </span>
           </div>
-          {!account && (
+          {!account ? (
             <button
               onClick={connectWallet}
               className="bg-amber-500 hover:bg-amber-400 text-gray-950 font-semibold text-sm px-4 py-2 rounded-lg transition-colors"
             >
               Connect MetaMask
             </button>
+          ) : (
+            <span className="text-teal-400 text-sm font-medium">Connected</span>
           )}
-          {account && <span className="text-teal-400 text-sm">Connected</span>}
         </div>
       </div>
 
@@ -182,7 +223,7 @@ export default function EscrowPage() {
           <button
             onClick={loadInfo}
             disabled={loading === "info"}
-            className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+            className="bg-gray-700 hover:bg-gray-600 text-white text-sm px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
           >
             {loading === "info" ? <Loader2 className="w-4 h-4 animate-spin" /> : "Load"}
           </button>
@@ -198,12 +239,12 @@ export default function EscrowPage() {
             <div className="bg-gray-800 rounded-lg p-3">
               <div className="text-gray-400 text-xs mb-1">Status</div>
               <div className={clsx("font-semibold text-sm", STATUS_COLORS[status])}>
-                {STATUS_LABELS[status]}
+                {STATUS_LABELS[status] ?? "Unknown"}
               </div>
             </div>
             <div className="bg-gray-800 rounded-lg p-3">
               <div className="text-gray-400 text-xs mb-1">Vault Balance</div>
-              <div className="text-amber-400 font-semibold text-sm">{String(info.balance)} MATIC</div>
+              <div className="text-amber-400 font-semibold text-sm">{String(info.balance)} ETH</div>
             </div>
             <div className="bg-gray-800 rounded-lg p-3">
               <div className="text-gray-400 text-xs mb-1">Milestones</div>
@@ -213,11 +254,16 @@ export default function EscrowPage() {
             </div>
             <div className="bg-gray-800 rounded-lg p-3">
               <div className="text-gray-400 text-xs mb-1">Total Locked</div>
-              <div className="text-amber-400 font-semibold text-sm">{String(info.totalAmount)} MATIC</div>
+              <div className="text-amber-400 font-semibold text-sm">{String(info.totalAmount)} ETH</div>
             </div>
           </div>
 
-          {/* Action buttons based on status */}
+          {/* Role hint */}
+          <div className="text-xs text-gray-500 mb-4 flex gap-4">
+            <span>🟡 Client: Account #1</span>
+            <span>🟢 Freelancer: Account #2</span>
+          </div>
+
           <div className="space-y-2">
             {status === 0 && (
               <div>
@@ -225,7 +271,7 @@ export default function EscrowPage() {
                   <input
                     value={depositAmount}
                     onChange={(e) => setDepositAmount(e.target.value)}
-                    placeholder="Amount in MATIC"
+                    placeholder="Amount in ETH"
                     className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-amber-500/50"
                   />
                 </div>
@@ -235,7 +281,7 @@ export default function EscrowPage() {
                   className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-gray-950 font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   {loading === "deposit" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                  Lock Payment in Escrow
+                  Lock Payment in Escrow (Client)
                 </button>
               </div>
             )}
@@ -244,7 +290,7 @@ export default function EscrowPage() {
               <button onClick={() => doAction("startWork")} disabled={!!loading}
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-gray-950 font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2">
                 {loading === "startWork" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                Confirm Work Started
+                Confirm Work Started (Freelancer)
               </button>
             )}
 
@@ -252,7 +298,7 @@ export default function EscrowPage() {
               <button onClick={() => doAction("submitMilestone")} disabled={!!loading}
                 className="w-full bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2">
                 {loading === "submitMilestone" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                Submit Milestone for Review
+                Submit Milestone for Review (Freelancer)
               </button>
             )}
 
@@ -260,8 +306,14 @@ export default function EscrowPage() {
               <button onClick={() => doAction("approveMilestone")} disabled={!!loading}
                 className="w-full bg-green-500 hover:bg-green-400 disabled:opacity-50 text-white font-semibold py-3 rounded-lg transition-colors flex items-center justify-center gap-2">
                 {loading === "approveMilestone" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />}
-                Approve Milestone — Release Funds
+                Approve Milestone — Release Funds (Client)
               </button>
+            )}
+
+            {status === 5 && (
+              <div className="bg-green-500/10 border border-green-500/30 text-green-400 text-sm p-4 rounded-xl text-center font-semibold">
+                🎉 Contract Complete — All funds released!
+              </div>
             )}
           </div>
         </div>

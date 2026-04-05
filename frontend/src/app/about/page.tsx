@@ -18,15 +18,6 @@ export default function AboutPage() {
         <div className="inline-block bg-teal-500/10 border border-teal-500/30 text-teal-400 text-sm font-medium px-4 py-1 rounded-full mb-6">
           HACKRAX 26 — Team GigShield
         </div>
-        <div className="flex justify-center mb-6">
-          <Image
-            src="/logo.png"
-            alt="GigShield"
-            width={200}
-            height={200}
-            className="object-contain"
-          />
-        </div>
         <h1 className="text-5xl font-bold text-white mb-4">About Us</h1>
         <p className="text-xl text-gray-400 max-w-2xl mx-auto">
           We built GigShield because gig workers deserve the same protection as everyone else.

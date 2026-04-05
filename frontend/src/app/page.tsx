@@ -11,15 +11,6 @@ export default function Home() {
         <div className="inline-block bg-teal-500/10 border border-teal-500/30 text-teal-400 text-sm font-medium px-4 py-1 rounded-full mb-6">
           Gig Shield
         </div>
-        <div className="flex justify-center mb-6">
-          <Image
-            src="/logo.png"
-            alt="GigShield"
-            width={200}
-            height={200}
-            className="object-contain"
-          />
-        </div>
         <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-4">
           Work freely. Get paid fairly.
         </p>

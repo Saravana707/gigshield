@@ -15,7 +15,7 @@ module.exports = {
       url: "http://127.0.0.1:8545"
     },
     polygonMumbai: {
-      url: process.env.POLYGON_MUMBAI_RPC || "https://rpc-mumbai.maticvigil.com",
+      url: process.env.POLYGON_MUMBAI_RPC || "https://rpc.ankr.com/polygon_mumbai",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
       chainId: 80001
     }
