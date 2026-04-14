@@ -52,6 +52,7 @@ class Job(Base):
     client_id = Column(String, ForeignKey("users.id"), nullable=False)
     freelancer_id = Column(String, ForeignKey("users.id"), nullable=True)
     deadline = Column(String, nullable=True)
+    contract_address = Column(String, nullable=True)  # deployed escrow contract address
     created_at = Column(DateTime, default=datetime.utcnow)
 
     client = relationship("User", back_populates="jobs_posted", foreign_keys=[client_id])

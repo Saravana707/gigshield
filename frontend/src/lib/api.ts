@@ -32,6 +32,9 @@ export const createJob = (clientId: string, data: {
 export const completeJob = (jobId: number, clientId: string) =>
   api.put(`/jobs/${jobId}/complete?client_id=${encodeURIComponent(clientId)}`).then(r => r.data)
 
+export const setJobContractAddress = (jobId: number, clientId: string, contractAddress: string) =>
+  api.put(`/jobs/${jobId}/contract?client_id=${encodeURIComponent(clientId)}&contract_address=${encodeURIComponent(contractAddress)}`).then(r => r.data)
+
 export const getPostedJobs = (userId: string) =>
   api.get<Job[]>(`/users/${userId}/posted-jobs`).then(r => r.data)
 

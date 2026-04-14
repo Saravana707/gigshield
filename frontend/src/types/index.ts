@@ -19,6 +19,7 @@ export interface Job {
   client_id: string
   freelancer_id?: string
   deadline?: string
+  contract_address?: string
   created_at: string
   client?: User
   application_count?: number

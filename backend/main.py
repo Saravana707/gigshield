@@ -94,6 +94,7 @@ class JobOut(BaseModel):
     client_id: str
     freelancer_id: Optional[str]
     deadline: Optional[str]
+    contract_address: Optional[str]
     created_at: str
     client: Optional[UserOut]
     application_count: Optional[int] = 0
@@ -249,6 +250,7 @@ def list_jobs(status: Optional[str] = "open", db: Session = Depends(get_db)):
             client_id=job.client_id,
             freelancer_id=job.freelancer_id,
             deadline=job.deadline,
+            contract_address=job.contract_address,
             created_at=job.created_at.isoformat(),
             client=job.client,
             application_count=len(job.applications),
@@ -284,6 +286,7 @@ def create_job(payload: JobCreate, client_id: str, db: Session = Depends(get_db)
         client_id=job.client_id,
         freelancer_id=job.freelancer_id,
         deadline=job.deadline,
+        contract_address=job.contract_address,
         created_at=job.created_at.isoformat(),
         client=job.client,
         application_count=0,
@@ -305,10 +308,22 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
         client_id=job.client_id,
         freelancer_id=job.freelancer_id,
         deadline=job.deadline,
+        contract_address=job.contract_address,
         created_at=job.created_at.isoformat(),
         client=job.client,
         application_count=len(job.applications),
     )
+
+@app.put("/jobs/{job_id}/contract")
+def set_contract_address(job_id: int, client_id: str, contract_address: str, db: Session = Depends(get_db)):
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.client_id != client_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    job.contract_address = contract_address
+    db.commit()
+    return {"message": "Contract address saved", "contract_address": contract_address}
 
 @app.put("/jobs/{job_id}/complete")
 def complete_job(job_id: int, client_id: str, db: Session = Depends(get_db)):
@@ -420,6 +435,7 @@ def get_posted_jobs(user_id: str, db: Session = Depends(get_db)):
             client_id=j.client_id,
             freelancer_id=j.freelancer_id,
             deadline=j.deadline,
+            contract_address=j.contract_address,
             created_at=j.created_at.isoformat(),
             client=j.client,
             application_count=len(j.applications),
